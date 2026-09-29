@@ -15,7 +15,7 @@ Usage :
     python swu_cube_to_draftmancer.py mon_cube.json --only-set ASH   (pour tester sur un seul set)
     python swu_cube_to_draftmancer.py mon_cube.json --refresh-cache  (pour forcer un nouveau téléchargement)
 """
-
+import random
 import argparse
 import json
 import sys
@@ -38,7 +38,6 @@ def load_cube(path: Path) -> dict:
         sys.exit(f"Erreur : le fichier '{path}' est introuvable.")
     except json.JSONDecodeError as e:
         sys.exit(f"Erreur : '{path}' n'est pas un JSON valide ({e}).")
-
 
 def parse_card_id(card_id: str) -> tuple[str, str]:
     """
@@ -247,6 +246,7 @@ def report_duplicate_names(found: list[dict]) -> None:
             print(f"    - {name}")
 
 
+# Slots "fixes" : (nom du slot = nom de la sheet, nombre de cartes piochées)
 SLOT_ORDER = [
     ("Leader", 1),
     ("Base", 1),
@@ -256,12 +256,72 @@ SLOT_ORDER = [
     ("Vert", 1),
     ("Noir", 3),
     ("Blanc", 3),
-    ("Wildcard", 4),
 ]
 
+# Sheets dans lesquelles piochent les slots Wildcard (toutes sauf Leader/Base)
+WILDCARD_SLOTS = 4
+DEFAULT_MAX_PLAYERS = 8
+DEFAULT_BOOSTERS_PER_PLAYER = 3
 
-def classify_aspect(card: dict) -> str | None:
-    """Catégorie couleur d'une carte non-Leader/Base, ou None si aucune ne correspond."""
+def load_config(path: Path) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        sys.exit(f"Erreur : fichier de config '{path}' introuvable.")
+    except json.JSONDecodeError as e:
+        sys.exit(f"Erreur : '{path}' n'est pas un JSON valide ({e}).")
+
+    groups = config.get("groups", {})
+    for slot in config.get("slots", []):
+        for src in slot["sources"]:
+            if src not in groups:
+                sys.exit(f"Erreur config : le slot '{slot['name']}' référence "
+                         f"le groupe inconnu '{src}'.")
+    config.setdefault("wildcard_slots", 4)
+    return config
+
+def card_matches(card: dict, group: dict) -> bool:
+    aspects = set(card.get("Aspects") or [])
+    if "aspects_exact" in group and aspects != set(group["aspects_exact"]):
+        return False
+    if "aspects_all" in group and not set(group["aspects_all"]) <= aspects:
+        return False
+    if "aspects_any" in group and not (set(group["aspects_any"]) & aspects):
+        return False
+    if "aspects_none" in group and (set(group["aspects_none"]) & aspects):
+        return False
+    return True
+
+def move_surplus_to_autre(categories: dict[str, list[dict]], packs: int) -> None:
+    """
+    Pour chaque sheet fixe (hors Leader/Base), ne garde que ce que les slots
+    fixes peuvent consommer (packs x cartes par booster). Le surplus est
+    déplacé dans 'Autre', où piochent les slots Wildcard.
+    Les cartes gardées sont tirées au hasard pour ne pas favoriser l'ordre du fichier.
+    """
+    for name, per_pack in SLOT_ORDER:
+        if name in ("Leader", "Base"):
+            continue
+        capacity = per_pack * packs
+        cards = categories[name]
+        random.shuffle(cards)
+
+        kept, used = [], 0
+        for entry in cards:
+            if used + entry["count"] <= capacity:
+                kept.append(entry)
+                used += entry["count"]
+            else:
+                categories["Autre"].append(entry)
+        categories[name] = kept
+
+        if used < capacity:
+            print(f"  ATTENTION : la sheet {name} ne contient que {used} exemplaire(s) "
+                  f"pour {capacity} nécessaires ({packs} boosters).")
+
+def classify_aspect(card: dict) -> str:
+    """Sheet d'une carte non-Leader/Base. 'Autre' si aucune couleur ne correspond."""
     aspects = card.get("Aspects") or []
     if aspects == ["Vigilance"]:
         return "Bleu"
@@ -275,29 +335,21 @@ def classify_aspect(card: dict) -> str | None:
         return "Noir"
     if "Heroism" in aspects:
         return "Blanc"
-    return None
+    return "Autre"
 
 
 def categorize_cards(found: list[dict]) -> dict[str, list[dict]]:
-    """
-    Répartit les cartes trouvées dans les sheets. "Wildcard" contient TOUTES
-    les cartes hors Leader/Base (chevauchement volontaire avec les sheets
-    colorées) : la protection contre les doublons dans un même booster est
-    déléguée au réglage 'duplicateProtection' de Draftmancer.
-    """
-    categories = {name: [] for name, _ in SLOT_ORDER}
+    """Répartit les cartes dans les sheets : une carte = une seule sheet."""
+    names = [n for n, _ in SLOT_ORDER] + ["Autre"]
+    categories = {name: [] for name in names}
     for f in found:
-        card = f["card"]
-        card_type = card.get("Type")
+        card_type = f["card"].get("Type")
         if card_type == "Leader":
             categories["Leader"].append(f)
         elif card_type == "Base":
             categories["Base"].append(f)
         else:
-            cat = classify_aspect(card)
-            if cat:
-                categories[cat].append(f)
-            categories["Wildcard"].append(f)
+            categories[classify_aspect(f["card"])].append(f)
     return categories
 
 
@@ -306,13 +358,91 @@ def sheet_card_line(entry: dict) -> str:
     return f"{entry['count']} {card_display_name(entry['card'])}"
 
 
-def generate_draftmancer_file(cube_name: str, found: list[dict]) -> tuple[str, dict[str, list[dict]]]:
-    """Génère le texte complet du fichier Draftmancer, et renvoie aussi les catégories (pour le résumé)."""
-    categories = categorize_cards(found)
+def allocate_cards(found: list[dict], config: dict, packs: int) -> dict[str, list[dict]]:
+    """
+    Répartit les cartes dans les sheets : chaque exemplaire n'est que dans une sheet.
+    Remplissage par niveaux de priorité (1re source de chaque slot, puis 2e, ...).
+    Ce qui n'est pris par aucun slot va dans 'Autre'.
+    """
+    groups, slots = config["groups"], config["slots"]
+    categories = {"Leader": [], "Base": [], **{s["name"]: [] for s in slots}, "Autre": []}
+    contributions = {s["name"]: [] for s in slots}
+
+    pool = []
+    for f in found:
+        card_type = f["card"].get("Type")
+        if card_type in ("Leader", "Base"):
+            categories[card_type].append(f)
+        else:
+            pool.append(dict(f))  # copie : 'count' sera décrémenté
+    random.shuffle(pool)
+
+    remaining = {s["name"]: s["count"] * packs for s in slots}
+    max_level = max((len(s["sources"]) for s in slots), default=0)
+
+    for level in range(max_level):
+        for slot in slots:
+            if level >= len(slot["sources"]):
+                continue
+            name, src = slot["name"], slot["sources"][level]
+            group = groups[src]
+            taken_total = 0
+            for entry in pool:
+                if remaining[name] <= 0:
+                    break
+                if entry["count"] <= 0 or not card_matches(entry["card"], group):
+                    continue
+                take = min(entry["count"], remaining[name])
+                categories[name].append({**entry, "count": take})
+                entry["count"] -= take
+                remaining[name] -= take
+                taken_total += take
+            if taken_total:
+                contributions[name].append((src, taken_total))
+
+    for entry in pool:
+        if entry["count"] > 0:
+            categories["Autre"].append(entry)
+
+    print("\n--- Répartition des slots ---")
+    for slot in slots:
+        name = slot["name"]
+        detail = ", ".join(f"{n} de '{src}'" for src, n in contributions[name]) or "aucune carte"
+        print(f"  {name:10s} : {detail}")
+        if remaining[name] > 0:
+            print(f"    ATTENTION : il manque {remaining[name]} exemplaire(s) "
+                  f"pour {packs} boosters.")
+
+    autre_total = sum(e["count"] for e in categories["Autre"])
+    needed = packs * config["wildcard_slots"]
+    print(f"  {'Autre':10s} : {autre_total} exemplaire(s) (besoin : {needed})")
+    if autre_total < needed:
+        print(f"    ATTENTION : il manque {needed - autre_total} exemplaire(s) dans Autre.")
+
+    return categories
+
+
+def build_layouts(config: dict) -> dict:
+    slots = [
+        {"name": "Leader", "count": 1, "sheets": [{"name": "Leader", "weight": 1}]},
+        {"name": "Base", "count": 1, "sheets": [{"name": "Base", "weight": 1}]},
+    ]
+    slots += [
+        {"name": s["name"], "count": s["count"], "sheets": [{"name": s["name"], "weight": 1}]}
+        for s in config["slots"]
+    ]
+    for i in range(1, config["wildcard_slots"] + 1):
+        slots.append({"name": f"Autre {i}", "count": 1, "sheets": [{"name": "Autre", "weight": 1}]})
+    return {"Standard": {"weight": 1, "slots": slots}}
+
+
+def generate_draftmancer_file(cube_name: str, found: list[dict], packs: int,
+                              config: dict) -> tuple[str, dict[str, list[dict]]]:
+    categories = allocate_cards(found, config, packs)
 
     settings = {
         "name": cube_name,
-        "duplicateProtection": True,
+        "layouts": build_layouts(config),
     }
 
     parts = ["[Settings]", json.dumps(settings, ensure_ascii=False, indent=2)]
@@ -321,9 +451,12 @@ def generate_draftmancer_file(cube_name: str, found: list[dict]) -> tuple[str, d
     parts.append("[CustomCards]")
     parts.append(json.dumps(custom_cards_json, ensure_ascii=False, indent=2))
 
-    for slot_name, count_per_pack in SLOT_ORDER:
-        parts.append(f"[{slot_name}({count_per_pack})]")
-        parts.extend(sheet_card_line(f) for f in categories[slot_name])
+    # Une section par sheet (sans "(n)" : le nombre de cartes est défini par le layout)
+    for sheet_name, cards in categories.items():
+        if not cards:
+            continue
+        parts.append(f"[{sheet_name}]")
+        parts.extend(sheet_card_line(f) for f in cards)
 
     return "\n".join(parts), categories
 
@@ -341,6 +474,12 @@ def main():
                          help="Force un nouveau téléchargement même si le cache existe")
     parser.add_argument("--output", type=Path, default=Path("draftmancer_cube.txt"),
                          help="Fichier de sortie Draftmancer (défaut : draftmancer_cube.txt)")
+    parser.add_argument("--max-players", type=int, default=DEFAULT_MAX_PLAYERS,
+                         help="Nombre maximum de joueurs (bots inclus) à supporter (défaut : 8)")
+    parser.add_argument("--boosters", type=int, default=DEFAULT_BOOSTERS_PER_PLAYER,
+                         help="Boosters par joueur (défaut : 3)")
+    parser.add_argument("--config", type=Path, default=Path("cube_config.json"),
+                         help="Fichier de config de la répartition (défaut : cube_config.json)")
     args = parser.parse_args()
 
     cube = load_cube(args.cube_file)
@@ -392,14 +531,15 @@ def main():
 
     if not missing:
         cube_name = cube.get("metadata", {}).get("name", "Cube SWU")
-        file_text, categories = generate_draftmancer_file(cube_name, found)
+        config = load_config(args.config)
+        packs = args.max_players * args.boosters
+        file_text, categories = generate_draftmancer_file(cube_name, found, packs, config)
         args.output.write_text(file_text, encoding="utf-8")
 
         print(f"\n--- Fichier Draftmancer généré : {args.output} ---")
-        for slot_name, count_per_pack in SLOT_ORDER:
-            n = len(categories[slot_name])
-            print(f"  {slot_name:10s} : {n} carte(s) disponible(s) dans le cube "
-                  f"(le booster en pioche {count_per_pack})")
+        for sheet_name, cards in categories.items():
+            print(f"  {sheet_name:10s} : {len(cards)} carte(s) dans la sheet")
+        print(f"  Wildcard   : {config['wildcard_slots']} slot(s) piochant dans la sheet Autre")
     else:
         print("\n(Fichier Draftmancer non généré : il reste des cartes introuvables à corriger d'abord.)")
 

@@ -1,0 +1,38 @@
+{
+  "wildcard_slots": 2,
+  "groups": {
+    "Bleu":  {"aspects_exact": ["Vigilance"]},
+    "Rouge": {"aspects_exact": ["Aggression"]},
+    "Jaune": {"aspects_exact": ["Cunning"]},
+    "Vert":  {"aspects_exact": ["Command"]},
+
+    "Bleu-X": {"aspects_all": ["Vigilance"], "aspect_any": ["Villainy", "Heroism"]},
+    "Rouge-X": {"aspects_all": ["Aggression"], "aspect_any": ["Villainy", "Heroism"]},
+    "Jaune-X": {"aspects_all": ["Cunning"], "aspect_any": ["Villainy", "Heroism"]},
+    "Vert-X": {"aspects_all": ["Command"], "aspect_any": ["Villainy", "Heroism"]},
+    
+    "Bleu-Noir":  {"aspects_all": ["Vigilance", "Villainy"]},
+    "Bleu-Blanc": {"aspects_all": ["Vigilance", "Heroism"]},
+    "Rouge-Noir":  {"aspects_all": ["Aggression", "Villainy"]},
+    "Rouge-Blanc": {"aspects_all": ["Aggression", "Heroism"]},
+    "Jaune-Noir":  {"aspects_all": ["Cunning", "Villainy"]},
+    "Jaune-Blanc": {"aspects_all": ["Cunning", "Heroism"]},
+    "Vert-Noir":  {"aspects_all": ["Command", "Villainy"]},
+    "Vert-Blanc": {"aspects_all": ["Command", "Heroism"]},
+
+    "Noir":      {"aspects_any": ["Villainy"]},
+    "Blanc":      {"aspects_any": ["Heroism"]}
+  },
+  "slots": [
+    {"name": "Bleu",  "count": 1, "sources": ["Bleu", "Bleu-X"]},
+    {"name": "Rouge", "count": 1, "sources": ["Rouge", "Rouge-X"]},
+    {"name": "Jaune", "count": 1, "sources": ["Jaune", "Jaune-X"]},
+    {"name": "Vert",  "count": 1, "sources": ["Vert", "Vert-X"]},
+    {"name": "Bleu-X", "count": 1, "sources": ["Bleu-X"]},
+    {"name": "Rouge-X", "count": 1, "sources": ["Rouge-X"]},
+    {"name": "Jaune-X", "count": 1, "sources": ["Jaune-X"]},
+    {"name": "Vert-X",  "count": 1, "sources": ["Vert-X"]},
+    {"name": "Noir",  "count": 2, "sources": ["Noir"]},
+    {"name": "Blanc", "count": 2, "sources": ["Blanc"]}
+  ]
+}
