@@ -205,22 +205,43 @@ def card_display_name(card: dict) -> str:
     type = card.get("Type")
     return f"{name} | {subtitle}" if subtitle and type != "Base" else name
 
+def format_mana_cost(cost) -> str:
+    """
+    Convertit le coût SWUDB (ex: 3, "3", None) au format mana Draftmancer ('{3}').
+    Draftmancer déduit le coût converti (CMC) de cette chaîne pour trier les
+    cartes pendant les picks. Les cartes sans coût numérique (Bases, X...)
+    reçoivent une chaîne vide.
+    """
+    if cost is None:
+        return ""
+    cost = str(cost).strip()
+    return f"{{{cost}}}" if cost.isdigit() else ""
 
 def card_to_custom_card(card: dict) -> dict:
     """
     Convertit une carte SWUDB en dictionnaire CustomCard Draftmancer.
-    Volontairement minimal : seuls name/type/image sont utiles ici (le
-    reste - mana_cost, subtypes, rarity, set... - n'est pas exploité et
-    peut même provoquer des erreurs de validation côté Draftmancer, comme
-    "Legendary" qui n'est pas une rareté valide pour Draftmancer).
-    Le verso (back) sera ajouté dans une prochaine étape.
+    Volontairement minimal : name / mana_cost / type / image, plus le verso
+    (back) pour les cartes double-face (les Leaders : BackArt = face unité).
+    Les autres champs (subtypes, rarity, set...) ne sont pas exploités et
+    peuvent provoquer des erreurs de validation côté Draftmancer, comme
+    "Legendary" qui n'est pas une rareté valide.
     """
-    return {
-        "name": card_display_name(card),
-        "mana_cost": "",  # champ obligatoire côté Draftmancer, mais inutilisé ici
+    name = card_display_name(card)
+    custom = {
+        "name": name,
+        "mana_cost": format_mana_cost(card.get("Cost")),
         "type": card.get("Type", ""),
         "image": card.get("FrontArt", ""),
     }
+
+    back_art = card.get("BackArt")
+    if back_art:
+        custom["back"] = {
+            "name": name,
+            "type": f"{card.get('Type', '')} Unit".strip(),
+            "image": back_art,
+        }
+    return custom
 
 
 def report_duplicate_names(found: list[dict]) -> None:
@@ -263,6 +284,11 @@ WILDCARD_SLOTS = 4
 DEFAULT_MAX_PLAYERS = 8
 DEFAULT_BOOSTERS_PER_PLAYER = 3
 
+# Critères reconnus par card_matches (à garder synchronisé avec cette fonction)
+VALID_GROUP_KEYS = {"aspects_exact", "aspects_all", "aspects_any", "aspects_none"}
+REQUIRED_SLOT_KEYS = {"name", "count", "sources"}
+
+
 def load_config(path: Path) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -273,11 +299,29 @@ def load_config(path: Path) -> dict:
         sys.exit(f"Erreur : '{path}' n'est pas un JSON valide ({e}).")
 
     groups = config.get("groups", {})
+    for group_name, group in groups.items():
+        unknown = set(group) - VALID_GROUP_KEYS
+        if unknown:
+            sys.exit(f"Erreur config : le groupe '{group_name}' contient des clés "
+                     f"inconnues : {sorted(unknown)}. "
+                     f"Clés valides : {sorted(VALID_GROUP_KEYS)}.")
+        if not group:
+            sys.exit(f"Erreur config : le groupe '{group_name}' n'a aucun critère "
+                     f"(il accepterait toutes les cartes).")
+        for key, value in group.items():
+            if not isinstance(value, list):
+                sys.exit(f"Erreur config : '{group_name}.{key}' doit être une liste.")
+
     for slot in config.get("slots", []):
+        missing_keys = REQUIRED_SLOT_KEYS - set(slot)
+        if missing_keys:
+            sys.exit(f"Erreur config : un slot ({slot.get('name', '?')}) "
+                     f"n'a pas les clés {sorted(missing_keys)}.")
         for src in slot["sources"]:
             if src not in groups:
                 sys.exit(f"Erreur config : le slot '{slot['name']}' référence "
                          f"le groupe inconnu '{src}'.")
+
     config.setdefault("wildcard_slots", 4)
     return config
 

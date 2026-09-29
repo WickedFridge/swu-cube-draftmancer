@@ -6,10 +6,10 @@
     "Jaune": {"aspects_exact": ["Cunning"]},
     "Vert":  {"aspects_exact": ["Command"]},
 
-    "Bleu-X": {"aspects_all": ["Vigilance"], "aspect_any": ["Villainy", "Heroism"]},
-    "Rouge-X": {"aspects_all": ["Aggression"], "aspect_any": ["Villainy", "Heroism"]},
-    "Jaune-X": {"aspects_all": ["Cunning"], "aspect_any": ["Villainy", "Heroism"]},
-    "Vert-X": {"aspects_all": ["Command"], "aspect_any": ["Villainy", "Heroism"]},
+    "Bleu-X": {"aspects_all": ["Vigilance"], "aspects_any": ["Villainy", "Heroism"]},
+    "Rouge-X": {"aspects_all": ["Aggression"], "aspects_any": ["Villainy", "Heroism"]},
+    "Jaune-X": {"aspects_all": ["Cunning"], "aspects_any": ["Villainy", "Heroism"]},
+    "Vert-X": {"aspects_all": ["Command"], "aspects_any": ["Villainy", "Heroism"]},
     
     "Bleu-Noir":  {"aspects_all": ["Vigilance", "Villainy"]},
     "Bleu-Blanc": {"aspects_all": ["Vigilance", "Heroism"]},
